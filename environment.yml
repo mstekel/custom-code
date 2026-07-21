@@ -8,5 +8,5 @@ dependencies:
   - wheel=0.46.2
   - pip
   - pip:
-    - --extra-index-url https://test.pypi.org/simple/
-    - dsw-lib
+      - --extra-index-url https://test.pypi.org/simple/
+      - dsw-lib
