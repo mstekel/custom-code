@@ -1,0 +1,12 @@
+name: dsw-user-code-env-test
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10,<3.12
+  - cryptography=46.0.7
+  - setuptools=80.10.1
+  - wheel=0.46.2
+  - pip
+  - pip:
+    - --extra-index-url https://test.pypi.org/simple/
+    - dsw-lib
