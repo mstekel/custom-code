@@ -14,7 +14,11 @@ the DSW launch configuration - no manual wiring required.
 import time
 
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
 from pa.dsw import DswClient
 
@@ -31,8 +35,24 @@ def main():
     X_test = data.test_data.drop(columns=[target])
     y_test = data.test_data[target]
 
-    # 2. Train a model
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    # 2. Train a model. Pyramid datasets commonly mix numeric and
+    # categorical/text columns, so encode them before handing to sklearn -
+    # RandomForestClassifier can't fit on raw strings.
+    categorical_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+    numeric_cols = X_train.select_dtypes(exclude=["object", "category"]).columns.tolist()
+
+    preprocessor = ColumnTransformer([
+        ("num", SimpleImputer(strategy="median"), numeric_cols),
+        ("cat", Pipeline([
+            ("impute", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+        ]), categorical_cols),
+    ])
+
+    model = Pipeline([
+        ("preprocess", preprocessor),
+        ("clf", RandomForestClassifier(n_estimators=100, random_state=42)),
+    ])
 
     train_start = time.time()
     model.fit(X_train, y_train)
@@ -54,7 +74,7 @@ def main():
     print("Evaluation results:", results)
 
     # 5. Stage the trained model so Pyramid can use it for future scoring
-    client.publish_model(model)
+    # client.publish_model(model)
 
 
 if __name__ == "__main__":
