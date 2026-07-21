@@ -6,7 +6,9 @@ dependencies:
   - cryptography=46.0.7
   - setuptools=80.10.1
   - wheel=0.46.2
+  - scikit-learn=1.9.0
+  - pandas=3.0.4
   - pip
   - pip:
       - --extra-index-url https://test.pypi.org/simple/
-      - dsw-lib
+      - dsw-lib==0.3.1
