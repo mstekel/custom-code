@@ -11,16 +11,31 @@ callback port, flow type, split number) automatically from CLI args /
 the DSW launch configuration - no manual wiring required.
 """
 
+import logging
+import sys
 import time
 
 import pandas as pd
-from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OrdinalEncoder
 
 from pa.dsw import DswClient
+
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.addFilter(lambda r: r.levelno < logging.WARNING)
+_stderr_handler = logging.StreamHandler(sys.stderr)
+_stderr_handler.setLevel(logging.WARNING)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        _stdout_handler,
+        _stderr_handler,
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -35,33 +50,26 @@ def main():
     X_test = data.test_data.drop(columns=[target])
     y_test = data.test_data[target]
 
-    # 2. Train a model. Pyramid datasets commonly mix numeric and
-    # categorical/text columns, so encode them before handing to sklearn -
-    # RandomForestClassifier can't fit on raw strings.
-    categorical_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
-    numeric_cols = X_train.select_dtypes(exclude=["object", "category"]).columns.tolist()
+    logger.info(f"[TRAIN] Target column: {target}")
+    logger.info(f"[TRAIN] Training features ({len(X_train.columns)}): {list(X_train.columns)}")
+    logger.info(f"[TRAIN] Train size: {X_train.shape[0]}, Test size: {X_test.shape[0]}")
 
-    preprocessor = ColumnTransformer([
-        ("num", SimpleImputer(strategy="median"), numeric_cols),
-        ("cat", Pipeline([
-            ("impute", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]), categorical_cols),
-    ])
-
+    # 2. Train a model
     model = Pipeline([
-        ("preprocess", preprocessor),
-        ("clf", RandomForestClassifier(n_estimators=100, random_state=42)),
+        ('enc', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)),
+        ('clf', RandomForestClassifier(random_state=42))
     ])
 
-    train_start = time.time()
+    train_start = time.perf_counter()
     model.fit(X_train, y_train)
-    training_duration = time.time() - train_start
+    training_duration = (time.perf_counter() - train_start) * 1000
+    logger.info(f"[TRAIN] Training done in {training_duration:.1f}ms")
 
     # 3. Predict on the held-out test split
-    test_start = time.time()
+    test_start = time.perf_counter()
     predicted = model.predict(X_test)
-    testing_duration = time.time() - test_start
+    testing_duration = (time.perf_counter() - test_start) * 1000
+    logger.info(f"[TRAIN] Inference done in {testing_duration:.1f}ms")
 
     predictions = pd.Series(predicted, index=X_test.index)
 
@@ -71,7 +79,7 @@ def main():
         training_duration=training_duration,
         testing_duration=testing_duration,
     )
-    print("Evaluation results:", results)
+    logger.info(f"[TRAIN] Evaluation submitted: {results}")
 
     # 5. Stage the trained model so Pyramid can use it for future scoring
     # client.publish_model(model)
