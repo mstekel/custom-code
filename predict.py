@@ -52,14 +52,14 @@ def main():
     for batch in data.read():
         batch_number += 1
         target_col = data.target_column
-        features = batch.drop(columns=[target_col], errors='ignore') if target_col else batch
-        logger.info(f"[PREDICT] Incoming features ({len(features.columns)}): {list(features.columns)}")
+        values = batch.drop(columns=[target_col], errors='ignore') if target_col else batch
+        logger.info(f"[PREDICT] Incoming values ({len(values.columns)}): {list(values.columns)}")
 
         predictions = []
         failed = 0
-        for i in features.index:
+        for i in values.index:
             try:
-                row = features.loc[[i]]
+                row = values.loc[[i]]
                 probabilities = [
                     ClassificationPredictionProbability(label=str(cls), probability=float(prob))
                     for cls, prob in zip(model.classes_, model.predict_proba(row)[0])
