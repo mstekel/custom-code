@@ -1,9 +1,18 @@
 """
-Example DSW user script.
+Example DSW user script (vectorised version).
 
-Loads the published model, streams incoming data batches from Pyramid,
-scores each row, and writes the predictions (with class probabilities)
-back to Pyramid.
+Loads the published model, streams incoming data chunks from Pyramid, scores each
+chunk with ONE model call per method (instead of one call per row), and writes the
+predictions (with class probabilities) back to Pyramid.
+
+Why: scikit-learn pays a fixed validation/dispatch cost per call, so calling
+predict_proba() + predict() once per row made the Python process CPU-bound at
+~200 rows/s. Scoring the whole chunk at once amortises that cost over every row.
+
+Behaviour is unchanged: same predicted labels (model.predict is still the source of
+the label), same probabilities, same prediction ids, and a row that cannot be scored
+is still reported by id and skipped. If a chunk fails as a whole, it is retried row
+by row so one bad row does not lose the other rows of the chunk.
 
 Intended to run inside a Pyramid Data Science Workspace (DSW) code node.
 DswClient reads its connection info (session token, command log id,
@@ -20,7 +29,7 @@ _stderr_handler = logging.StreamHandler(sys.stderr)
 _stderr_handler.setLevel(logging.WARNING)
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         _stdout_handler,
@@ -29,13 +38,42 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 try:
     from pa.dsw import DswClient, ClassificationPrediction, ClassificationPredictionProbability
 except Exception as e:
     logger.error(f"Import failed: {e}", exc_info=True)
     sys.exit(1)
+
+
+def score_chunk(model, class_labels, values, ids):
+    """Scores a whole chunk with a single predict_proba and a single predict call."""
+    probabilities = model.predict_proba(values)
+    labels = model.predict(values)
+    return [
+        ClassificationPrediction(
+            id=row_id,
+            predicted_label=str(label),
+            probabilities=[
+                ClassificationPredictionProbability(label=cls, probability=float(prob))
+                for cls, prob in zip(class_labels, row_probs)
+            ]
+        )
+        for row_id, label, row_probs in zip(ids, labels, probabilities)
+    ]
+
+
+def score_rows_individually(model, class_labels, values):
+    """Fallback when scoring a chunk as a whole fails: score row by row so only the bad rows are lost."""
+    predictions = []
+    failed = 0
+    for i in values.index:
+        try:
+            predictions.extend(score_chunk(model, class_labels, values.loc[[i]], [i]))
+        except Exception as e:
+            logger.error(f"Prediction failed for id={i}: {e}", exc_info=True)
+            failed += 1
+    return predictions, failed
 
 
 def main():
@@ -46,35 +84,27 @@ def main():
     if hasattr(model, 'feature_names_in_'):
         logger.info(f"[PREDICT] Model expects features ({len(model.feature_names_in_)}): {list(model.feature_names_in_)}")
 
+    class_labels = [str(cls) for cls in model.classes_]
+
     data = client.get_data_stream()
 
     batch_number = 0
     for batch in data.read():
         batch_number += 1
         target_col = data.target_column
-        features = batch.drop(columns=[target_col], errors='ignore') if target_col else batch
-        logger.info(f"[PREDICT] Incoming features ({len(features.columns)}): {list(features.columns)}")
+        values = batch.drop(columns=[target_col], errors='ignore') if target_col else batch
+        if batch_number == 1:
+            logger.info(f"[PREDICT] Incoming values ({len(values.columns)}): {list(values.columns)}")
 
-        predictions = []
         failed = 0
-        for i in features.index:
-            try:
-                row = features.loc[[i]]
-                probabilities = [
-                    ClassificationPredictionProbability(label=str(cls), probability=float(prob))
-                    for cls, prob in zip(model.classes_, model.predict_proba(row)[0])
-                ]
-                predictions.append(ClassificationPrediction(
-                    id=i,
-                    predicted_label=str(model.predict(row)[0]),
-                    probabilities=probabilities
-                ))
-            except Exception as e:
-                logger.error(f"Prediction failed for id={i}: {e}", exc_info=True)
-                failed += 1
+        try:
+            predictions = score_chunk(model, class_labels, values, list(values.index))
+        except Exception as e:
+            logger.warning(f"Chunk {batch_number} failed as a whole ({e}); retrying row by row")
+            predictions, failed = score_rows_individually(model, class_labels, values)
 
         client.write_predictions(predictions, batch_number)
-        logger.info(f"Wrote {len(predictions)} predictions, {failed} failed")
+        logger.info(f"Batch {batch_number}: wrote {len(predictions)} predictions, {failed} failed")
 
     logger.info("Batch loop complete")
 
